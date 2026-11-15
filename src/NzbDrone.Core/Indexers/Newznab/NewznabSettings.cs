@@ -100,6 +100,9 @@ namespace NzbDrone.Core.Indexers.Newznab
         [FieldDefinition(8, Label = "Narrator Metadata API Key", HelpText = "Only needed when this indexer was added via Prowlarr. Leave blank to use the main API key.", Privacy = PrivacyLevel.ApiKey)]
         public string NarratorMetadataApiKey { get; set; }
 
+        [FieldDefinition(12, Type = FieldType.Select, Label = "Apostrophes in Searches", SelectOptions = typeof(NewznabApostropheSearch), HelpText = "Indexers disagree on apostrophes: some only match \"Zoe's Tale\", others only \"Zoes Tale\". Searching both spellings finds the most releases and sends extra requests for titles and authors that contain an apostrophe.", Advanced = true)]
+        public int ApostropheSearch { get; set; }
+
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public bool EnableEnhancedSearching
         {
@@ -144,5 +147,17 @@ namespace NzbDrone.Core.Indexers.Newznab
         {
             return new NzbDroneValidationResult(Validator.Validate(this));
         }
+    }
+
+    public enum NewznabApostropheSearch
+    {
+        [FieldOption(Label = "Both Spellings", Hint = "Search with and without the apostrophe")]
+        Both = 0,
+
+        [FieldOption(Label = "As Written", Hint = "Keep the apostrophe")]
+        AsWritten = 1,
+
+        [FieldOption(Label = "Removed", Hint = "Drop the apostrophe")]
+        Removed = 2
     }
 }

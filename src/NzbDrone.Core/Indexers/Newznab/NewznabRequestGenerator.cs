@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
@@ -10,6 +11,8 @@ namespace NzbDrone.Core.Indexers.Newznab
 {
     public class NewznabRequestGenerator : IIndexerRequestGenerator
     {
+        private static readonly Regex Apostrophes = new Regex(@"['’`]", RegexOptions.Compiled);
+
         private readonly INewznabCapabilitiesProvider _capabilitiesProvider;
         private readonly Logger _logger;
         private readonly string _indexerName;
@@ -94,47 +97,82 @@ namespace NzbDrone.Core.Indexers.Newznab
                     $"&q={NewsnabifyTitle(searchCriteria.BookQuery)}+{NewsnabifyTitle(searchCriteria.AuthorQuery)}+{NewsnabifyTitle(narratorQuery)}"));
             }
 
-            if (SupportsBookSearch)
-            {
-                AddBookPageableRequests(pageableRequests,
-                    searchCategories,
-                    $"&author={NewsnabifyTitle(searchCriteria.AuthorQuery)}&title={NewsnabifyTitle(searchCriteria.BookQuery)}");
+            // Indexers disagree on apostrophes: some only match "Zoe's Tale", others only "Zoes Tale".
+            // With both spellings, each title and author request is followed by its apostrophe-free
+            // spelling in the same tier, so the results merge.
+            var supportsBookSearch = SupportsBookSearch;
+            var spellings = supportsBookSearch || supportsSearch
+                ? GetSpellings(searchCriteria.BookQuery, searchCriteria.AuthorQuery, (NewznabApostropheSearch)Settings.ApostropheSearch)
+                : null;
 
-                AddBookPageableRequests(pageableRequests,
-                    searchCategories,
-                    $"&title={NewsnabifyTitle(searchCriteria.BookQuery)}");
+            if (supportsBookSearch)
+            {
+                pageableRequests.AddTier();
+                AddRequests(pageableRequests, searchCategories, "book", spellings, (book, author) => $"&author={NewsnabifyTitle(author)}&title={NewsnabifyTitle(book)}");
+
+                pageableRequests.AddTier();
+                AddRequests(pageableRequests, searchCategories, "book", spellings, (book, _) => $"&title={NewsnabifyTitle(book)}");
             }
 
             if (supportsSearch)
             {
                 pageableRequests.AddTier();
-
-                pageableRequests.Add(GetPagedRequests(MaxPages,
-                    searchCategories,
-                    "search",
-                    $"&q={NewsnabifyTitle(searchCriteria.BookQuery)}+{NewsnabifyTitle(searchCriteria.AuthorQuery)}"));
-
-                pageableRequests.Add(GetPagedRequests(MaxPages,
-                    searchCategories,
-                    "search",
-                    $"&q={NewsnabifyTitle(searchCriteria.AuthorQuery)}+{NewsnabifyTitle(searchCriteria.BookQuery)}"));
+                AddRequests(pageableRequests, searchCategories, "search", spellings, (book, author) => $"&q={NewsnabifyTitle(book)}+{NewsnabifyTitle(author)}");
+                AddRequests(pageableRequests, searchCategories, "search", spellings, (book, author) => $"&q={NewsnabifyTitle(author)}+{NewsnabifyTitle(book)}");
 
                 pageableRequests.AddTier();
-
-                pageableRequests.Add(GetPagedRequests(MaxPages,
-                    searchCategories,
-                    "search",
-                    $"&q={NewsnabifyTitle(searchCriteria.BookQuery)}"));
+                AddRequests(pageableRequests, searchCategories, "search", spellings, (book, _) => $"&q={NewsnabifyTitle(book)}");
             }
 
             return pageableRequests;
         }
 
-        private void AddBookPageableRequests(IndexerPageableRequestChain chain, IEnumerable<int> categories, string parameters)
+        private void AddRequests(IndexerPageableRequestChain chain,
+            IEnumerable<int> categories,
+            string searchType,
+            IEnumerable<(string Book, string Author)> spellings,
+            Func<string, string, string> buildParameters)
         {
-            chain.AddTier();
+            foreach (var parameters in spellings.Select(v => buildParameters(v.Book, v.Author)).Distinct())
+            {
+                chain.Add(GetPagedRequests(MaxPages, categories, searchType, parameters));
+            }
+        }
 
-            chain.Add(GetPagedRequests(MaxPages, categories, "book", $"{parameters}"));
+        private static List<(string Book, string Author)> GetSpellings(string bookQuery, string authorQuery, NewznabApostropheSearch apostrophes)
+        {
+            var spellings = new List<(string Book, string Author)> { (bookQuery, authorQuery) };
+
+            if (apostrophes == NewznabApostropheSearch.AsWritten)
+            {
+                return spellings;
+            }
+
+            var book = RemoveApostrophes(bookQuery);
+            var author = RemoveApostrophes(authorQuery);
+
+            // A title or author made only of apostrophes has no other spelling.
+            if (book.IsNullOrWhiteSpace() || author.IsNullOrWhiteSpace())
+            {
+                return spellings;
+            }
+
+            if (apostrophes == NewznabApostropheSearch.Removed)
+            {
+                spellings.Clear();
+            }
+
+            spellings.Add((book, author));
+
+            return spellings;
+        }
+
+        private static string RemoveApostrophes(string query)
+        {
+            var words = Apostrophes.Replace(query ?? string.Empty, string.Empty)
+                .Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            return string.Join("+", words);
         }
 
         private IEnumerable<IndexerRequest> GetPagedRequests(int maxPages, IEnumerable<int> categories, string searchType, string parameters)
