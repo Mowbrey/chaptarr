@@ -125,6 +125,18 @@ namespace NzbDrone.Core.Indexers.Newznab
                     searchCategories,
                     "search",
                     $"&q={NewsnabifyTitle(searchCriteria.BookQuery)}"));
+
+                // Reached only when every search above found nothing on this indexer.
+                var plainWords = PlainWordsQuery.Build(searchCriteria);
+                if (plainWords != null)
+                {
+                    pageableRequests.AddTier();
+
+                    pageableRequests.Add(GetPagedRequests(MaxPages,
+                        searchCategories,
+                        "search",
+                        $"&q={NewsnabifyTitle(plainWords)}"));
+                }
             }
 
             return pageableRequests;
